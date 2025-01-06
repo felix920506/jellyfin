@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -59,28 +57,14 @@ public sealed class AutoDiscoveryHost : BackgroundService
             return;
         }
 
-        var udpServers = new List<Task>();
-        // Linux needs to bind to the broadcast addresses to receive broadcast traffic
-        if (OperatingSystem.IsLinux() && networkConfig.EnableIPv4)
-        {
-            udpServers.Add(ListenForAutoDiscoveryMessage(IPAddress.Broadcast, stoppingToken));
-        }
-
-        udpServers.AddRange(_networkManager.GetInternalBindAddresses()
-            .Select(intf => ListenForAutoDiscoveryMessage(
-                OperatingSystem.IsLinux() && intf.AddressFamily == AddressFamily.InterNetwork
-                    ? NetworkUtils.GetBroadcastAddress(intf.Subnet)
-                    : intf.Address,
-                stoppingToken)));
-
-        await Task.WhenAll(udpServers).ConfigureAwait(false);
+        await ListenForAutoDiscoveryMessage(IPAddress.Any, stoppingToken).ConfigureAwait(false);
     }
 
-    private async Task ListenForAutoDiscoveryMessage(IPAddress address, CancellationToken cancellationToken)
+    private async Task ListenForAutoDiscoveryMessage(IPAddress listenAddress, CancellationToken cancellationToken)
     {
         try
         {
-            using var udpClient = new UdpClient(new IPEndPoint(address, PortNumber));
+            using var udpClient = new UdpClient(new IPEndPoint(listenAddress, PortNumber));
             udpClient.MulticastLoopback = false;
 
             while (!cancellationToken.IsCancellationRequested)
@@ -91,7 +75,7 @@ public sealed class AutoDiscoveryHost : BackgroundService
                     var text = Encoding.UTF8.GetString(result.Buffer);
                     if (text.Contains("who is JellyfinServer?", StringComparison.OrdinalIgnoreCase))
                     {
-                        await RespondToV2Message(udpClient, result.RemoteEndPoint, cancellationToken).ConfigureAwait(false);
+                        await RespondToV2Message(result.RemoteEndPoint, udpClient, cancellationToken).ConfigureAwait(false);
                     }
                 }
                 catch (SocketException ex)
@@ -107,25 +91,24 @@ public sealed class AutoDiscoveryHost : BackgroundService
         catch (Exception ex)
         {
             // Exception in this function will prevent the background service from restarting in-process.
-            _logger.LogError(ex, "Unable to bind to {Address}:{Port}", address, PortNumber);
+            _logger.LogError(ex, "Unable to bind to {Address}:{Port}", listenAddress, PortNumber);
         }
     }
 
-    private async Task RespondToV2Message(UdpClient udpClient, IPEndPoint endpoint, CancellationToken cancellationToken)
+    private async Task RespondToV2Message(IPEndPoint endpoint, UdpClient broadCastUdpClient, CancellationToken cancellationToken)
     {
         var localUrl = _appHost.GetSmartApiUrl(endpoint.Address);
         if (string.IsNullOrEmpty(localUrl))
         {
-            _logger.LogWarning("Unable to respond to server discovery request because the local ip address could not be determined.");
+            _logger.LogWarning("Unable to respond to server discovery request because the local ip address could not be determined");
             return;
         }
 
         var response = new ServerDiscoveryInfo(localUrl, _appHost.SystemId, _appHost.FriendlyName);
-
         try
         {
             _logger.LogDebug("Sending AutoDiscovery response");
-            await udpClient
+            await broadCastUdpClient
                 .SendAsync(JsonSerializer.SerializeToUtf8Bytes(response).AsMemory(), endpoint, cancellationToken)
                 .ConfigureAwait(false);
         }

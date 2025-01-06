@@ -33,7 +33,7 @@ namespace MediaBrowser.Controller.Net
             SingleWriter = false
         });
 
-        private readonly object _activeConnectionsLock = new();
+        private readonly Lock _activeConnectionsLock = new();
 
         /// <summary>
         /// The _active connections.
@@ -288,7 +288,7 @@ namespace MediaBrowser.Controller.Net
 
             lock (_activeConnectionsLock)
             {
-                foreach (var connection in _activeConnections.ToArray())
+                foreach (var connection in _activeConnections.ToList())
                 {
                     DisposeConnection(connection);
                 }
